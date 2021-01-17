@@ -1,0 +1,13 @@
+requests
+bs4
+sqlalchemy
+bpython
+jedi<0.18.0
+ipython
+pdbpp
+remote-pdb
+pdb_clone
+click
+lxml
+xlwt
+natsort

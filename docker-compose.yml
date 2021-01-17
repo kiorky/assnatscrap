@@ -1,0 +1,15 @@
+version: "3.8"
+services:
+  scrap:
+    env_file: [.env]
+    build:
+      context: "."
+      args:
+        PY_VER: "3.8"
+    volumes:
+    - "./src:/code/src"
+    - "./setup.py:/code/setup.py"
+    - "./rootfs/docker-entrypoint.sh:/docker-entrypoint.sh"
+    - "./data:/data"
+    - "./requirements:/code/requirements"
+

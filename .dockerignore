@@ -1,0 +1,5 @@
+/.tox
+/local/code
+/local/out
+/node_modules
+/.gitlab-ci.yml
