@@ -3,6 +3,8 @@
 from __future__ import absolute_import, division, print_function
 import os
 import csv
+from multiprocessing import Pool
+from bs4 import BeautifulSoup
 import zipfile
 import click
 import logging
@@ -20,7 +22,7 @@ import xlwt
 aep = 'SCRAP'
 D = Path('/data')
 log = logging.getLogger('assnat.scrapper')
-LAW_URL = "http://data.assemblee-nationale.fr/static/openData/repository/{lawrepo}/dossiers_legislatifs_opendata/{lawid}/libre_office.csv"
+LAW_URL = "http://data.assemblee-nationale.fr/static/openData/repository/{lawrepo}/dossiers_legislatifs_opendata/{lawid}/libre_office.csv"  # noqa
 varnames = {
     'aid': "Numéro de l'amendement",
     'partie': "Partie de l'amendement",
@@ -28,7 +30,8 @@ varnames = {
     'xml': 'URL Amendement format XML',
     'url': 'URL Amendement',
 }
-DEPUTES_URL = 'http://data.assemblee-nationale.fr/static/openData/repository/15/amo/deputes_senateurs_ministres_legislature/AMO20_dep_sen_min_tous_mandats_et_organes_XV.json.zip'
+DEPUTES_URL = 'http://data.assemblee-nationale.fr/static/openData/repository/15/amo/deputes_senateurs_ministres_legislature/AMO20_dep_sen_min_tous_mandats_et_organes_XV.json.zip'  # noqa
+DOSSIERS_LEGISLATTIFS = 'http://data.assemblee-nationale.fr/static/openData/repository/15/loi/dossiers_legislatifs/Dossiers_Legislatifs_XV.json.zip'  # noqa
 DEPUTESD = D / 'deputes'
 
 
@@ -45,14 +48,16 @@ def fetch(url, p, decode=True, unzip=None):
     if fetch:
         log.info(f'Downloading {url} to {p}')
         req = requests.get(url)
+        content = req.content
+        mode = 'wb'
         if decode:
-                fic.write(req.content.decode('utf-8'))
-        else:
-            with open(p, 'wb') as fic:
-                fic.write(req.content)
-            if unzip:
-                with zipfile.ZipFile(p, 'r') as zip_ref:
-                    zip_ref.extractall(p.parent)
+            content = content.decode('utf-8')
+            mode = 'w'
+        with open(p, mode) as fic:
+            fic.write(content)
+        if unzip:
+            with zipfile.ZipFile(p, 'r') as zip_ref:
+                zip_ref.extractall(p.parent)
     else:
         log.info(f'{url} already fetched to {p} (set FORCE_REDOWNLOAD=1)')
 
@@ -74,9 +79,10 @@ def download_amendement(am, DEPUTES, ORGANES):
     for v in varnames:
         am[v] = am.pop(varnames[v])
     am['json'] = am['xml'].replace('xml', 'json')
-    p = D/f'{am["lawid"]}/{am["aid"]}'
+    am['uid'] = os.path.basename(am['xml']).split('.')[0]
+    p = D/f'{am["lawid"]}/{am["uid"]}'
     for i in 'xml', 'json':
-        xml  = p / i
+        xml = p / i
         fetch(am[i], xml)
     am['jsond'] = json.load(open(str(p/'json')))
     am['parpols'] = set()
@@ -95,39 +101,65 @@ def download_amendement(am, DEPUTES, ORGANES):
             am['signataires'].append(DEPUTES[a])
         except KeyError:
             ORGANES['raw'][a]['libelle']
-    [am['parpols'].add(d.get('parpol', 'NON-INSCRIT')) for d in am['signataires']]
+
+    [am['parpols'].add(d.get('parpol', 'NON-INSCRIT'))
+     for d in am['signataires']]
+
     dtext = am['jsond']['pointeurFragmentTexte']['division']
     title = dtext['titre']
     if dtext['type'] == 'CHAPITRE':
         title = dtext['articleDesignation']
-    am['art'] =  title
+    am['art'] = title
     am['artpos'] = dtext['articleDesignation']
+    am['sort'] = am['Sort de l\'amendement']
+    am['text'] = am['jsond'].get('corps', {}).get(
+        'contenuAuteur', {}).get('dispositif', '')
+    am['expose'] = am['jsond'].get('corps', {}).get(
+        'contenuAuteur', {}).get('exposeSommaire', '')
     return am
 
 
 def general_tab(data, sheet="general", w=None):
     ws = w.add_sheet(sheet)
     general_rows = []
+    columns = OrderedDict([
+        ('aid', 'aid'),
+        ('Instance', 'Instance'),
+        ('Cosignataire(s)', 'Cosignataire(s)'),
+        ('parpols', 'partis politiques'),
+        ('auteur', 'auteur'),
+        ('art', 'article'),
+        ('artpos', 'article position'),
+        ('url', 'url'),
+        ('sort', 'sort'),
+        ('expose', 'Exposé'),
+        ('text', 'Texte'),
+    ])
     for i in data:
         am = data[i]
         row = OrderedDict()
-        for i in ['aid', 'parpols', 'auteur', 'art', 'artpos', 'url']:
+        for i in columns:
             row[i] = am[i]
         general_rows.append(row)
     general_rows = natsorted(
         general_rows,
-        key=lambda x: f"{x['art']}{x['parpols']}{x['auteur']}{x['aid']}".lower(),
+        key=lambda x: f"{x['art']}{x['Instance']}{x['sort']}{x['parpols']}{x['auteur']}{x['Cosignataire(s)']}{x['aid']}".lower(),
         alg=ns.IGNORECASE)
-    columns = list(general_rows[0].keys())
     # headers
     for j, col in enumerate(columns):
-        ws.write(0, j, col)
+        ws.write(0, j, columns[col])
     # row
     for i, row in enumerate(general_rows, 1):
         for j, col in enumerate(columns):
             val = row[col]
             if isinstance(val, (set, list)):
                 val = ';'.join(val)
+            if col in ['url']:
+                val = xlwt.Formula(f'Hyperlink("{val}")')
+            if col in ['text', 'expose']:
+                val = BeautifulSoup(val).get_text()
+            if col in ['Instance']:
+                val = re.sub('Commission.*', 'Commission', val)
             ws.write(i, j, val)
     return w
 
@@ -179,7 +211,8 @@ def load_depute(depute, DEPUTES=None, ORGANES=None):
         mandats = jdata['acteur']['mandats']['mandat']
         if isinstance(mandats, dict):
             mandats = [mandats]
-        parpol = [a['organes']['organeRef'] for a in mandats if a['typeOrgane'] == 'PARPOL']
+        parpol = [a['organes']['organeRef']
+                  for a in mandats if a['typeOrgane'] == 'PARPOL']
         parpolref = parpol[0]
         o['parpol'] = ORGANES['type']['PARPOL'][parpolref]['libelleAbrev']
     except IndexError:
@@ -201,6 +234,11 @@ def load_deputes():
     return DEPUTES, ORGANES
 
 
+def download(lawid, amendement, DEPUTES, ORGANES):
+    amendement["lawid"] = lawid
+    return download_amendement(amendement, DEPUTES, ORGANES)
+
+
 @click.command()
 @click.option('--lawrepo', default="15")
 @click.option('--lawid', help='law id',
@@ -213,13 +251,16 @@ def parse(lawrepo, lawid, loglevel):
     log.info('start')
     amendements = OrderedDict()
     csvdata, data = download_general_csv(lawid, lawrepo)
-    for amendement in csvdata:
-        amendement["lawid"] = lawid
-        amendements[amendement["aid"]] = download_amendement(
-            amendement, DEPUTES, ORGANES)
+    pool = Pool()
+    for a in pool.starmap(
+        download,
+        [(lawid, a, DEPUTES, ORGANES) for a in csvdata],
+        chunksize=250
+    ):
+        amendements[a['uid']] = a
     make_csvs(lawid, amendements)
 
 
 if __name__ == '__main__':
     parse()
-# vim:set et sts=4 ts=4 tw=80:
+# vim:set et sts=4 ts=4 tw=120:
