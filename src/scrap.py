@@ -116,6 +116,7 @@ def download_amendement(am, DEPUTES, ORGANES):
         'contenuAuteur', {}).get('dispositif', '')
     am['expose'] = am['jsond'].get('corps', {}).get(
         'contenuAuteur', {}).get('exposeSommaire', '')
+    am['date'] = am['jsond']['cycleDeVie']['dateDepot']
     return am
 
 
@@ -124,6 +125,7 @@ def general_tab(data, sheet="general", w=None):
     general_rows = []
     columns = OrderedDict([
         ('aid', 'aid'),
+        ('date', 'date'),
         ('Instance', 'Instance'),
         ('Cosignataire(s)', 'Cosignataire(s)'),
         ('parpols', 'partis politiques'),
@@ -143,7 +145,10 @@ def general_tab(data, sheet="general", w=None):
         general_rows.append(row)
     general_rows = natsorted(
         general_rows,
-        key=lambda x: f"{x['art']}{x['Instance']}{x['sort']}{x['parpols']}{x['auteur']}{x['Cosignataire(s)']}{x['aid']}".lower(),
+        key=lambda x: (
+            f"{x['art']}{x['Instance']}{x['date']}{x['sort']}"
+            f"{x['parpols']}{x['auteur']}{x['Cosignataire(s)']}"
+            f"{x['aid']}").lower(),
         alg=ns.IGNORECASE)
     # headers
     for j, col in enumerate(columns):
